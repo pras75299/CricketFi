@@ -1,0 +1,180 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Since we are using PostgreSQL for local development and Supabase later, we use native Postgres types like Decimal and Json
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id             String    @id @default(uuid())
+  walletAddress  String    @unique // Solana pubkey
+  privyId        String?   @unique // Privy user ID
+  username       String?   @unique
+  email          String?
+  avatarUrl      String?
+  level          Int       @default(1)
+  totalContests  Int       @default(0)
+  totalWins      Int       @default(0)
+  totalEarnings  Float     @default(0) // USDC
+  kycVerified    Boolean   @default(false)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @default(now()) @updatedAt
+
+  contests       Contest[] // Contests created by this user
+  userTeams      UserTeam[]
+  transactions   Transaction[]
+}
+
+model Match {
+  id             String    @id @default(uuid())
+  externalId     String    @unique // CricAPI match ID
+  seriesName     String    // e.g., "IPL 2025"
+  teamHome       String    // e.g., "MI"
+  teamAway       String    // e.g., "CSK"
+  teamHomeFull   String?
+  teamAwayFull   String?
+  venue          String?
+  format         String    // T20 / ODI / Test
+  matchStartAt   DateTime
+  status         String    @default("upcoming") // upcoming/live/completed
+  result         String?   // "MI won by 5 wickets"
+  scorecard      Json?   // Stored as JSON object
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @default(now()) @updatedAt
+
+  matchSquads    MatchSquad[]
+  contests       Contest[]
+  playerPoints   PlayerPoint[]
+}
+
+model CricketPlayer {
+  id             String    @id @default(uuid())
+  externalId     String    @unique // CricAPI player ID
+  name           String
+  fullName       String?
+  role           String    // batsman/bowler/allrounder/wk
+  battingStyle   String?
+  bowlingStyle   String?
+  nationality    String?
+  iplTeam        String?
+  imageUrl       String?
+  isActive       Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+
+  matchSquads    MatchSquad[]
+  playerPoints   PlayerPoint[]
+  captainTeams   UserTeam[] @relation("CaptainPlayer")
+  vcTeams        UserTeam[] @relation("VCPlayer")
+}
+
+model MatchSquad {
+  id             String    @id @default(uuid())
+  matchId        String
+  match          Match     @relation(fields: [matchId], references: [id])
+  playerId       String
+  player         CricketPlayer @relation(fields: [playerId], references: [id])
+  teamSide       String    // home/away
+  creditValue    Float     // e.g., 9.5 credits
+  isPlayingXi    Boolean   @default(false) // confirmed in XI
+  battingOrder   Int?
+
+  @@unique([matchId, playerId])
+}
+
+model Contest {
+  id                 String    @id @default(uuid())
+  onChainAddress     String?   @unique // Solana PDA address
+  matchId            String
+  match              Match     @relation(fields: [matchId], references: [id])
+  name               String
+  contestType        String    // h2h/small/mega/free
+  entryFeeUsdc       Float
+  prizePoolUsdc      Float     @default(0)
+  maxTeams           Int
+  currentTeams       Int       @default(0)
+  winnerCount        Int
+  prizeDistribution  Json    // Stored as JSON Array
+  platformFeeBps     Int       @default(500)
+  status             String    @default("upcoming")
+  guaranteedPool     Boolean   @default(false)
+  createdById        String?
+  createdBy          User?     @relation(fields: [createdById], references: [id])
+  createdAt          DateTime  @default(now())
+
+  userTeams          UserTeam[]
+  transactions       Transaction[]
+}
+
+model UserTeam {
+  id                String    @id @default(uuid())
+  onChainAddress    String?   @unique
+  contestId         String
+  contest           Contest   @relation(fields: [contestId], references: [id])
+  userId            String
+  user              User      @relation(fields: [userId], references: [id])
+  teamName          String?
+  players           Json    // JSON Array [{player_id, is_captain, is_vice_captain, credits}]
+  captainPlayerId   String?
+  captainPlayer     CricketPlayer? @relation("CaptainPlayer", fields: [captainPlayerId], references: [id])
+  vcPlayerId        String?
+  vcPlayer          CricketPlayer? @relation("VCPlayer", fields: [vcPlayerId], references: [id])
+  creditsUsed       Float
+  totalPoints       Float?
+  rank              Int?
+  prizeWonUsdc      Float?
+  prizeClaimed      Boolean   @default(false)
+  createdAt         DateTime  @default(now())
+
+  @@unique([contestId, userId]) // 1 team per contest per user (v1)
+}
+
+model PlayerPoint {
+  id              String    @id @default(uuid())
+  matchId         String
+  match           Match     @relation(fields: [matchId], references: [id])
+  playerId        String
+  player          CricketPlayer @relation(fields: [playerId], references: [id])
+  
+  // Batting
+  runs            Int       @default(0)
+  ballsFaced      Int       @default(0)
+  fours           Int       @default(0)
+  sixes           Int       @default(0)
+  
+  // Bowling
+  overs           Float     @default(0)
+  wickets         Int       @default(0)
+  runsGiven       Int       @default(0)
+  maidens         Int       @default(0)
+  
+  // Fielding
+  catches         Int       @default(0)
+  stumpings       Int       @default(0)
+  runOuts         Int       @default(0)
+  
+  // Computed
+  fantasyPoints   Float?
+  updatedAt       DateTime  @default(now()) @updatedAt
+
+  @@unique([matchId, playerId])
+}
+
+model Transaction {
+  id              String    @id @default(uuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id])
+  type            String    // entry/prize/refund/fee
+  amountUsdc      Float
+  txSignature     String?   // Solana transaction signature
+  contestId       String?
+  contest         Contest?  @relation(fields: [contestId], references: [id])
+  status          String    @default("pending") // pending/confirmed/failed
+  createdAt       DateTime  @default(now())
+  confirmedAt     DateTime?
+}

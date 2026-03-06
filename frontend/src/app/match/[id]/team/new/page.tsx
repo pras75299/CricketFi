@@ -5,7 +5,8 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Check, UserPlus } from "lucide-react";
-// import { useWallet } from "@solana/wallet-adapter-react"; // Real integration needed later
+import { useWallet } from "@solana/wallet-adapter-react";
+import { createEntryFeeTransaction, connection } from "@/lib/solana";
 
 const MAX_PLAYERS = 11;
 const MAX_CREDITS = 100;
@@ -22,6 +23,9 @@ export default function TeamBuilderPage({ params }: { params: { id: string } }) 
   const [captain, setCaptain] = useState<string | null>(null);
   const [viceCaptain, setViceCaptain] = useState<string | null>(null);
   const [step, setStep] = useState<1 | 2>(1); // 1 = Select Players, 2 = Set C/VC
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const { publicKey, sendTransaction } = useWallet();
 
   // Fetch match details
   useEffect(() => {
@@ -55,20 +59,33 @@ export default function TeamBuilderPage({ params }: { params: { id: string } }) 
 
   const handleSaveTeam = async () => {
      if (selectedPlayers.length !== MAX_PLAYERS || !captain || !viceCaptain) return;
+     if (!publicKey) {
+         alert("Please connect your wallet first!");
+         return;
+     }
 
-     const payload = {
-        contest_id: contestId,
-        user_id: "demo-user", // TODO: Replace with Privy/Wallet Adapter pubkey
-        team_name: "My Squad",
-        players: selectedPlayers.map(p => ({
-            player_id: p.id,
-            credits: p.credits,
-            is_captain: captain === p.id,
-            is_vice_captain: viceCaptain === p.id
-        }))
-     };
-
+     setIsSubmitting(true);
      try {
+         // 1. Ask user to sign the USDC Entry Fee Transaction via wallet adapter
+         // We fetch the entry fee amount from the contest object (mocked 5 USDC here for simplicity)
+         const tx = await createEntryFeeTransaction(publicKey, 5.0);
+         const signature = await sendTransaction(tx, connection);
+         await connection.confirmTransaction(signature, 'confirmed');
+
+         // 2. Save team selection and TX signature in Database backend
+         const payload = {
+            contest_id: contestId,
+            user_id: publicKey.toString(),
+            team_name: "My Squad",
+            players: selectedPlayers.map(p => ({
+                player_id: p.id,
+                credits: p.credits,
+                is_captain: captain === p.id,
+                is_vice_captain: viceCaptain === p.id
+            })),
+            tx_signature: signature
+         };
+
          const res = await fetch('/api/teams', {
              method: 'POST',
              headers: { 'Content-Type': 'application/json' },
@@ -76,15 +93,18 @@ export default function TeamBuilderPage({ params }: { params: { id: string } }) 
          });
          
          if (res.ok) {
-            alert('Team Created Successfully! (Sign Tx coming next)');
-            // TODO: Initiate Solana Transaction here using Anchor to join_contest
+            alert('Team Created & Fee Paid Successfully!');
             router.push(`/contest/${contestId}`);
          } else {
              const err = await res.json();
-             alert(err.error);
+             alert(err.error || 'Failed to save team');
          }
      } catch (e) {
          console.error(e);
+         const errorObj = e as Error;
+         alert(errorObj.message || "Transaction failed");
+     } finally {
+         setIsSubmitting(false);
      }
   };
 
@@ -191,8 +211,8 @@ export default function TeamBuilderPage({ params }: { params: { id: string } }) 
                  Next (Choose C/VC)
              </Button>
          ) : (
-             <Button className="w-full" disabled={!captain || !viceCaptain} onClick={handleSaveTeam}>
-                 Save & Join Contest
+             <Button className="w-full" disabled={!captain || !viceCaptain || isSubmitting} onClick={handleSaveTeam}>
+                 {isSubmitting ? 'Confirming Tx...' : 'Save & Pay Entry Fee'}
              </Button>
          )}
       </div>
